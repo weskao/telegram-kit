@@ -17,12 +17,14 @@ if token and store.set("telegram_bot_token", token):
 ## Install
 
 ```bash
-uv add "telegram-kit @ git+https://github.com/weskao/telegram-kit@v0.1.0"
+uv add "telegram-kit>=0.1.2,<0.2"
 ```
 
-Pin to a tag. Bumping the tag and re-running
+Published to PyPI on every `v*` tag (`.github/workflows/publish.yml`).
 `uv lock --upgrade-package telegram-kit` is how every project using this kit
-picks up a fix — no file to copy, no diff to reapply.
+picks up a fix — no file to copy, no diff to reapply. A project that is never
+published to PyPI can pin the git tag instead:
+`uv add "telegram-kit @ git+https://github.com/weskao/telegram-kit@v0.1.2"`.
 
 ## What it guarantees, whichever project uses it
 
