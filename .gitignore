@@ -3,4 +3,4 @@ __pycache__/
 .venv/
 dist/
 .ruff_cache/
-uv.lock
+.coverage
