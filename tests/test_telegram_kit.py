@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import urllib.parse
 import warnings
@@ -13,6 +14,16 @@ from unittest import mock
 import telegram_kit
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+class WindowsOs:
+    """Makes ``telegram_kit.os.name`` read ``"nt"`` without touching the real
+    global ``os`` module — patching that directly breaks pathlib for every
+    other test in the process (it stops knowing which flavour it's on)."""
+    name = "nt"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
 
 
 class Recorder:
@@ -69,6 +80,46 @@ class CredentialStoreTests(unittest.TestCase):
             with pinned("dpapi", Recorder((0, "ciphertext\n"))):
                 self.assertFalse(store.set("../escape", "fake-token"))
 
+    def test_dpapi_get_returns_empty_when_the_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = telegram_kit.CredentialStore("other-app", dpapi_dir=lambda: pathlib.Path(d))
+            with pinned("dpapi", Recorder()):
+                self.assertEqual(store.get("telegram_bot_token"), "")
+
+    def test_dpapi_get_decrypts_the_stored_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "telegram_bot_token.dpapi").write_text("ciphertext")
+            store = telegram_kit.CredentialStore("other-app", dpapi_dir=lambda: pathlib.Path(d))
+            with pinned("dpapi", Recorder((0, "fake-token\n"))):
+                self.assertEqual(store.get("telegram_bot_token"), "fake-token")
+
+    def test_dpapi_set_fails_when_powershell_reports_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = telegram_kit.CredentialStore("other-app", dpapi_dir=lambda: pathlib.Path(d))
+            with pinned("dpapi", Recorder((1, ""))):
+                self.assertFalse(store.set("telegram_bot_token", "fake-token"))
+            self.assertFalse((pathlib.Path(d) / "telegram_bot_token.dpapi").exists())
+
+    def test_dpapi_delete_removes_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "telegram_bot_token.dpapi"
+            path.write_text("ciphertext")
+            store = telegram_kit.CredentialStore("other-app", dpapi_dir=lambda: pathlib.Path(d))
+            with pinned("dpapi", Recorder()):
+                self.assertTrue(store.delete("telegram_bot_token"))
+            self.assertFalse(path.exists())
+
+    def test_dpapi_delete_succeeds_even_when_nothing_was_stored(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = telegram_kit.CredentialStore("other-app", dpapi_dir=lambda: pathlib.Path(d))
+            with pinned("dpapi", Recorder()):
+                self.assertTrue(store.delete("telegram_bot_token"))
+
+    def test_delete_without_a_backend_reports_failure(self):
+        store = telegram_kit.CredentialStore("other-app")
+        with pinned(None, Recorder()):
+            self.assertFalse(store.delete("telegram_bot_token"))
+
 
 class CredentialResolutionTests(unittest.TestCase):
     def test_configured_values_win_over_environment(self):
@@ -81,6 +132,25 @@ class CredentialResolutionTests(unittest.TestCase):
         self.assertEqual(telegram_kit.resolve_credentials("", "111", environ=env), ("env-token", "111"))
         self.assertEqual(telegram_kit.resolve_credentials("fake-token", " ", environ=env),
                          ("fake-token", "222"))
+
+
+class SendMessageTests(unittest.TestCase):
+    def test_false_on_missing_credentials_without_a_network_call(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            self.assertFalse(telegram_kit.send_message("", "111", "hello"))
+            self.assertFalse(telegram_kit.send_message("fake-token", "", "hello"))
+        urlopen.assert_not_called()
+
+    def test_false_on_a_network_error_never_raises(self):
+        import urllib.error
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+            self.assertFalse(telegram_kit.send_message("fake-token", "111", "hello"))
+
+    def test_false_on_a_malformed_token_never_raises(self):
+        """A hand-corrupted token can make the URL itself invalid (``InvalidURL``,
+        a ``ValueError`` subclass) — still reported as a failed send, not a crash."""
+        with mock.patch("urllib.request.urlopen", side_effect=ValueError("bad url")):
+            self.assertFalse(telegram_kit.send_message("not a token", "111", "hello"))
 
 
 class NotifyTests(unittest.TestCase):
@@ -130,6 +200,224 @@ class InputAndDisplayTests(unittest.TestCase):
         self.assertEqual(telegram_kit.mask_secret("123456:ABCDEFGHIJ"), "********GHIJ")
         self.assertEqual(telegram_kit.mask_secret("short"), "********")
         self.assertEqual(telegram_kit.mask_secret(""), "")
+
+
+class WritePrivateTests(unittest.TestCase):
+    def test_writes_owner_only_and_atomically(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = pathlib.Path(d) / "secret.txt"
+            telegram_kit.write_private(target, "content")
+            self.assertEqual(target.read_text(), "content")
+            if os.name != "nt":
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(pathlib.Path(d).iterdir()), [target])  # no leftover temp file
+
+    def test_refuses_to_overwrite_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = pathlib.Path(d) / "real.txt"
+            real.write_text("untouched")
+            link = pathlib.Path(d) / "link.txt"
+            link.symlink_to(real)
+            with self.assertRaises(OSError):
+                telegram_kit.write_private(link, "attacker-controlled")
+            self.assertEqual(real.read_text(), "untouched")
+
+    def test_windows_path_runs_powershell_and_cleans_up_on_failure(self):
+        def failing_powershell(argv, input, **kwargs):
+            pathlib.Path(__import__("json").loads(input)["path"]).write_text("partial")
+            return subprocess.CompletedProcess(argv, 1)
+        with tempfile.TemporaryDirectory() as d:
+            target = pathlib.Path(d) / "secret.txt"
+            with mock.patch.object(telegram_kit, "os", WindowsOs()), \
+                    mock.patch.object(telegram_kit.subprocess, "run", side_effect=failing_powershell), \
+                    self.assertRaises(OSError):
+                telegram_kit.write_private(target, "content")
+            self.assertEqual(list(pathlib.Path(d).iterdir()), [])
+
+    def test_windows_timeout_is_oserror_and_leaves_no_temp_file(self):
+        def slow_powershell(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 15)
+        with tempfile.TemporaryDirectory() as d:
+            target = pathlib.Path(d) / "secret.txt"
+            with mock.patch.object(telegram_kit, "os", WindowsOs()), \
+                    mock.patch.object(telegram_kit.subprocess, "run", side_effect=slow_powershell), \
+                    self.assertRaises(OSError):
+                telegram_kit.write_private(target, "content")
+            self.assertEqual(list(pathlib.Path(d).iterdir()), [])
+
+
+class SubprocessHelperTests(unittest.TestCase):
+    def test_run_executes_and_captures_stdout(self):
+        code, out = telegram_kit._run([sys.executable, "-c", "print('hi')"])
+        self.assertEqual((code, out.strip()), (0, "hi"))
+
+    def test_unhex_decodes_a_hex_encoded_secret(self):
+        self.assertEqual(telegram_kit._unhex(b"hello".hex()), "hello")
+
+    def test_unhex_leaves_a_non_hex_secret_alone(self):
+        self.assertEqual(telegram_kit._unhex("123456:ABCDEF"), "123456:ABCDEF")
+
+    def test_unhex_leaves_hex_that_is_not_valid_utf8_alone(self):
+        garbage = bytes([0xFF, 0xFE]).hex()
+        self.assertEqual(telegram_kit._unhex(garbage), garbage)
+
+    def test_batch_quote_escapes_backslashes_and_quotes(self):
+        self.assertEqual(telegram_kit._batch_quote(r'back\slash "quote"'),
+                          r'back\\slash \"quote\"')
+
+    def test_batch_quote_rejects_a_newline(self):
+        with self.assertRaises(ValueError):
+            telegram_kit._batch_quote("line1\nline2")
+
+    def test_detect_backend_prefers_keychain_on_macos(self):
+        with mock.patch.object(telegram_kit, "IS_MACOS", True), \
+                mock.patch.object(telegram_kit, "IS_WINDOWS", False), \
+                mock.patch.object(telegram_kit.shutil, "which", return_value="/usr/bin/security"):
+            self.assertEqual(telegram_kit._detect_backend(), "keychain")
+
+    def test_detect_backend_prefers_dpapi_on_windows(self):
+        with mock.patch.object(telegram_kit, "IS_MACOS", False), \
+                mock.patch.object(telegram_kit, "IS_WINDOWS", True), \
+                mock.patch.object(telegram_kit.shutil, "which", return_value="powershell.exe"):
+            self.assertEqual(telegram_kit._detect_backend(), "dpapi")
+
+    def test_detect_backend_falls_back_to_libsecret_on_linux(self):
+        with mock.patch.object(telegram_kit, "IS_MACOS", False), \
+                mock.patch.object(telegram_kit, "IS_WINDOWS", False), \
+                mock.patch.object(telegram_kit.shutil, "which", return_value="/usr/bin/secret-tool"):
+            self.assertEqual(telegram_kit._detect_backend(), "libsecret")
+
+    def test_detect_backend_is_none_with_nothing_installed(self):
+        with mock.patch.object(telegram_kit, "IS_MACOS", False), \
+                mock.patch.object(telegram_kit, "IS_WINDOWS", False), \
+                mock.patch.object(telegram_kit.shutil, "which", return_value=None):
+            self.assertIsNone(telegram_kit._detect_backend())
+
+
+class BackendLabelTests(unittest.TestCase):
+    def test_available_and_label_reflect_the_detected_backend(self):
+        with mock.patch.object(telegram_kit, "backend", lambda: "libsecret"):
+            self.assertTrue(telegram_kit.available())
+            self.assertEqual(telegram_kit.backend_label(), "Secret Service (libsecret)")
+
+    def test_unavailable_when_nothing_is_detected(self):
+        with mock.patch.object(telegram_kit, "backend", lambda: None):
+            self.assertFalse(telegram_kit.available())
+            self.assertEqual(telegram_kit.backend_label(), "none")
+
+    def test_backend_probes_only_once_and_caches_the_result(self):
+        telegram_kit.backend.cache_clear()
+        try:
+            with mock.patch.object(telegram_kit, "_detect_backend", return_value="keychain") as probe:
+                self.assertEqual(telegram_kit.backend(), "keychain")
+                self.assertEqual(telegram_kit.backend(), "keychain")
+            probe.assert_called_once()
+        finally:
+            telegram_kit.backend.cache_clear()
+
+
+class DpapiDirTests(unittest.TestCase):
+    def test_defaults_to_appdata_when_set(self):
+        with mock.patch.dict(os.environ, {"APPDATA": r"C:\Users\wes\AppData\Roaming"}):
+            self.assertEqual(telegram_kit._default_dpapi_dir("other-app"),
+                              pathlib.Path(r"C:\Users\wes\AppData\Roaming") / "other-app")
+
+    def test_falls_back_to_home_when_appdata_is_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(telegram_kit._default_dpapi_dir("other-app"),
+                              pathlib.Path.home() / "AppData" / "Roaming" / "other-app")
+
+
+def _fake_winreg(*, value=None, opening_fails=False):
+    module = types.SimpleNamespace(HKEY_CURRENT_USER=object())
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def open_key(hive, path):
+        if opening_fails:
+            raise OSError("no such registry key")
+        return _Key()
+
+    module.OpenKey = open_key
+    module.QueryValueEx = lambda key, name: (value, 1)
+    return module
+
+
+class LegacyWindowsTokenTests(unittest.TestCase):
+    def test_false_on_non_windows_without_touching_the_registry(self):
+        with mock.patch.object(telegram_kit, "IS_WINDOWS", False):
+            self.assertFalse(telegram_kit.legacy_windows_env_token_present())
+
+    def test_true_when_the_registry_still_holds_a_token(self):
+        with mock.patch.object(telegram_kit, "IS_WINDOWS", True), \
+                mock.patch.dict(sys.modules, {"winreg": _fake_winreg(value="fake-token")}):
+            self.assertTrue(telegram_kit.legacy_windows_env_token_present())
+
+    def test_false_when_the_stored_value_is_empty(self):
+        with mock.patch.object(telegram_kit, "IS_WINDOWS", True), \
+                mock.patch.dict(sys.modules, {"winreg": _fake_winreg(value="")}):
+            self.assertFalse(telegram_kit.legacy_windows_env_token_present())
+
+    def test_false_when_the_registry_key_does_not_exist(self):
+        with mock.patch.object(telegram_kit, "IS_WINDOWS", True), \
+                mock.patch.dict(sys.modules, {"winreg": _fake_winreg(opening_fails=True)}):
+            self.assertFalse(telegram_kit.legacy_windows_env_token_present())
+
+
+class CredentialStoreLibsecretAndKeychainTests(unittest.TestCase):
+    """The keychain/libsecret argv shapes get/set/delete build, and that a
+    non-zero exit or a raised exception both mean "no secret" rather than a
+    crash — mirrors CredentialStoreTests but for the two backends that test
+    class's dpapi-focused cases don't touch."""
+
+    def test_libsecret_get_set_delete_argv(self):
+        store = telegram_kit.CredentialStore("other-app")
+        run = Recorder((0, "fake-token\n"), (0, ""), (0, ""))
+        with pinned("libsecret", run):
+            self.assertEqual(store.get("telegram_bot_token"), "fake-token")
+            self.assertTrue(store.set("telegram_bot_token", "fake-token"))
+            self.assertTrue(store.delete("telegram_bot_token"))
+        get_argv, set_argv, delete_argv = (c[0] for c in run.calls)
+        self.assertEqual(get_argv, ["secret-tool", "lookup", "service", "other-app",
+                                     "account", "telegram_bot_token"])
+        self.assertEqual(set_argv[:2], ["secret-tool", "store"])
+        self.assertEqual(run.calls[1][1], "fake-token")  # secret travels on stdin, not argv
+        self.assertEqual(delete_argv, ["secret-tool", "clear", "service", "other-app",
+                                        "account", "telegram_bot_token"])
+
+    def test_keychain_delete_argv(self):
+        store = telegram_kit.CredentialStore("other-app")
+        run = Recorder((0, ""))
+        with pinned("keychain", run):
+            self.assertTrue(store.delete("telegram_bot_token"))
+        self.assertEqual(run.calls[0][0], ["security", "delete-generic-password",
+                                            "-s", "other-app", "-a", "telegram_bot_token"])
+
+    def test_a_nonzero_exit_reads_as_no_secret_not_a_crash(self):
+        store = telegram_kit.CredentialStore("other-app")
+        with pinned("keychain", Recorder((1, ""))):
+            self.assertEqual(store.get("telegram_bot_token"), "")
+
+    def test_a_raising_helper_reads_as_no_secret_not_a_crash(self):
+        def exploding(argv, stdin=None):
+            raise OSError("helper vanished")
+        store = telegram_kit.CredentialStore("other-app")
+        with pinned("keychain", exploding):
+            self.assertEqual(store.get("telegram_bot_token"), "")
+            self.assertFalse(store.set("telegram_bot_token", "fake-token"))
+            self.assertFalse(store.delete("telegram_bot_token"))
+
+    def test_setting_an_empty_value_deletes_instead_of_storing_blank(self):
+        store = telegram_kit.CredentialStore("other-app")
+        run = Recorder((0, ""))
+        with pinned("keychain", run):
+            self.assertTrue(store.set("telegram_bot_token", ""))
+        self.assertEqual(run.calls[0][0][:2], ["security", "delete-generic-password"])
 
 
 if __name__ == "__main__":
