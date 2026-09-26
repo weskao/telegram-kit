@@ -1,3 +1,12 @@
+## [0.1.3] - 2026-09-26
+
+### 📚 Documentation
+
+- **readme:** Link the PyPI project page
+
+### ⚙️ Miscellaneous Tasks
+
+- **release:** Rename publish.yml to release.yml and attach dists to the GitHub Release
 ## [0.1.2] - 2026-09-26
 
 ### 🐛 Bug Fixes
