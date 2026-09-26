@@ -45,7 +45,7 @@ class StandaloneTests(unittest.TestCase):
         install anything else just to get ``import telegram_kit``."""
         result = subprocess.run(  # noqa: PLW1510 - want a status, not to raise
             [sys.executable, "-I", "-c", "import telegram_kit"],
-            cwd=ROOT, env={"PYTHONPATH": str(ROOT / "src")},
+            cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
         )
         self.assertEqual(result.returncode, 0)
 
@@ -323,7 +323,8 @@ class DpapiDirTests(unittest.TestCase):
                               pathlib.Path(r"C:\Users\wes\AppData\Roaming") / "other-app")
 
     def test_falls_back_to_home_when_appdata_is_unset(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("APPDATA", None)
             self.assertEqual(telegram_kit._default_dpapi_dir("other-app"),
                               pathlib.Path.home() / "AppData" / "Roaming" / "other-app")
 
