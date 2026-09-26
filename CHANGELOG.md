@@ -1,3 +1,16 @@
+## [0.1.2] - 2026-09-26
+
+### 🐛 Bug Fixes
+
+- **tests:** Stop wiping env vars Windows needs to boot Python
+
+### 📚 Documentation
+
+- **readme:** Document PyPI install alongside git-tag pin
+
+### ⚙️ Miscellaneous Tasks
+
+- **publish:** Add PyPI publish workflow on v* tags
 ## [0.1.1] - 2026-09-26
 
 ### 📚 Documentation
