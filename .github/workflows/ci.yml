@@ -39,7 +39,7 @@ jobs:
       - name: Test
         run: uv run python -m unittest discover -s tests -t . -v
       - name: Build distributions
-        run: uv build --wheel
+        run: uv build
       - name: Validate wheel is importable standalone
         shell: python
         run: |
