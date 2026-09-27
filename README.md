@@ -46,10 +46,12 @@ published to PyPI can pin the git tag instead:
 |---|---|
 | `CredentialStore(service, dpapi_dir=None)` | Get/set/delete a secret in the OS store. |
 | `resolve_credentials(token, chat_id, environ=None)` | Configured value, else `TG_BOT_TOKEN`/`TG_CHAT_ID`. |
-| `send_message(token, chat_id, text, timeout=10)` | One `sendMessage` call. `False` on any failure. |
+| `send_message(token, chat_id, text, timeout=10)` | One `sendMessage` call. Inside tmux the text ends with a `tmux_line()` on its own line (a `send_photo` caption too). `False` on any failure. |
+| `send_photo(token, chat_id, photo, caption="", timeout=30)` | Image + caption in one `sendPhoto` message. A caption over 1024 UTF-16 units is sent right after the image as a `sendMessage`. `False` on any failure. |
 | `notify(text, service, chat_id="", token_key=..., store=None)` | Resolve + send in one call. |
 | `read_hidden(prompt, ask=None)` | Hidden input; `None` if the terminal can't hide it. |
 | `mask_secret(secret)` | `********` plus at most the last 4 characters. |
+| `tmux_line()` | `🪟 Tmux: <session>` inside tmux, else `""`. |
 | `write_private(target, content)` | Atomic, owner-only file write. |
 
 ## Develop

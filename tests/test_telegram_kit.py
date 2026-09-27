@@ -15,6 +15,20 @@ import telegram_kit
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# Sends append a "🪟 Tmux: <session>" line when run inside tmux; the exact-text
+# assertions below must not depend on where the suite runs. TmuxTagTests opts in.
+_no_tmux = mock.patch.dict(os.environ)
+
+
+def setUpModule():
+    _no_tmux.start()
+    os.environ.pop("TMUX", None)
+    os.environ.pop("TMUX_PANE", None)
+
+
+def tearDownModule():
+    _no_tmux.stop()
+
 
 class WindowsOs:
     """Makes ``telegram_kit.os.name`` read ``"nt"`` without touching the real
@@ -135,6 +149,22 @@ class CredentialResolutionTests(unittest.TestCase):
 
 
 class SendMessageTests(unittest.TestCase):
+    def test_text_only_is_one_form_encoded_send_message_post(self):
+        """No image, no photo code path: the text goes out exactly as a plain sendMessage."""
+        sent = []
+
+        def urlopen(request, timeout):
+            sent.append((request, timeout))
+            return _Response()
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+            self.assertTrue(telegram_kit.send_message("fake-token", "111", "中文 & x=1"))
+        (request, timeout), = sent
+        self.assertEqual(request.full_url, "https://api.telegram.org/botfake-token/sendMessage")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(urllib.parse.parse_qs(request.data.decode()), {"chat_id": ["111"], "text": ["中文 & x=1"]})
+        self.assertEqual(timeout, 10)
+
     def test_false_on_missing_credentials_without_a_network_call(self):
         with mock.patch("urllib.request.urlopen") as urlopen:
             self.assertFalse(telegram_kit.send_message("", "111", "hello"))
@@ -151,6 +181,149 @@ class SendMessageTests(unittest.TestCase):
         a ``ValueError`` subclass) — still reported as a failed send, not a crash."""
         with mock.patch("urllib.request.urlopen", side_effect=ValueError("bad url")):
             self.assertFalse(telegram_kit.send_message("not a token", "111", "hello"))
+
+
+class _Response:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return b"{}"
+
+
+def _form_fields(request) -> dict:
+    """Parse the multipart body *request* carries: ``{name: (filename, bytes)}``."""
+    import email.parser
+    import email.policy
+    raw = b"Content-Type: " + request.get_header("Content-type").encode() + b"\r\n\r\n" + request.data
+    msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(raw)
+    return {part.get_param("name", header="content-disposition"):
+            (part.get_filename(), part.get_payload(decode=True)) for part in msg.iter_parts()}
+
+
+class SendPhotoTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.photo = pathlib.Path(tmp.name) / "shot.png"
+        self.photo.write_bytes(b"\x89PNG fake image bytes")
+        self.sent = []
+
+    def urlopen(self, request, timeout):
+        self.sent.append(request)
+        return _Response()
+
+    def test_sends_image_and_caption_in_one_send_photo_call(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self.urlopen):
+            self.assertTrue(telegram_kit.send_photo("fake-token", "111", self.photo, "build 42 ✅"))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("/botfake-token/sendPhoto", self.sent[0].full_url)
+        fields = _form_fields(self.sent[0])
+        self.assertEqual(fields["chat_id"], (None, b"111"))
+        self.assertEqual(fields["caption"], (None, "build 42 ✅".encode()))
+        self.assertEqual(fields["photo"], ("shot.png", b"\x89PNG fake image bytes"))
+
+    def test_without_a_caption_sends_only_the_image(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self.urlopen):
+            self.assertTrue(telegram_kit.send_photo("fake-token", "111", str(self.photo)))
+        self.assertNotIn("caption", _form_fields(self.sent[0]))
+
+    def test_caption_over_the_limit_follows_the_image_as_a_message(self):
+        """Telegram rejects a caption over 1024 characters; the text must still arrive."""
+        long_text = "x" * 1025
+        with mock.patch("urllib.request.urlopen", side_effect=self.urlopen):
+            self.assertTrue(telegram_kit.send_photo("fake-token", "111", self.photo, long_text))
+        self.assertEqual([r.full_url.rsplit("/", 1)[1] for r in self.sent], ["sendPhoto", "sendMessage"])
+        self.assertNotIn("caption", _form_fields(self.sent[0]))
+        self.assertEqual(urllib.parse.parse_qs(self.sent[1].data.decode())["text"], [long_text])
+
+    def test_caption_at_the_limit_stays_on_the_image(self):
+        """The limit counts UTF-16 units: 512 emoji = 1024 units still fit."""
+        with mock.patch("urllib.request.urlopen", side_effect=self.urlopen):
+            self.assertTrue(telegram_kit.send_photo("fake-token", "111", self.photo, "🙂" * 512))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("caption", _form_fields(self.sent[0]))
+
+    def test_false_on_missing_credentials_without_a_network_call(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            self.assertFalse(telegram_kit.send_photo("", "111", self.photo))
+            self.assertFalse(telegram_kit.send_photo("fake-token", "", self.photo))
+        urlopen.assert_not_called()
+
+    def test_false_on_a_missing_image_never_raises(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            self.assertFalse(telegram_kit.send_photo("fake-token", "111", self.photo.with_name("gone.png")))
+        urlopen.assert_not_called()
+
+    def test_false_on_a_network_error_never_raises(self):
+        import urllib.error
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+            self.assertFalse(telegram_kit.send_photo("fake-token", "111", self.photo, "hi"))
+
+
+class TmuxTagTests(unittest.TestCase):
+    """Same rule as ~/.claude/scripts/tg-tag.sh: inside tmux every text message and
+    non-empty caption ends with "🪟 Tmux: <session>" on its own line; else untouched."""
+
+    def setUp(self):
+        self.sent = []
+        patcher = mock.patch("urllib.request.urlopen", side_effect=self.urlopen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def urlopen(self, request, timeout):
+        self.sent.append(request)
+        return _Response()
+
+    def text(self, i=0):
+        return urllib.parse.parse_qs(self.sent[i].data.decode())["text"][0]
+
+    def test_inside_tmux_the_session_line_follows_the_text(self):
+        run = Recorder((0, "demo_session\n"))
+        with mock.patch.dict(os.environ, {"TMUX": "/tmp/x,1,0", "TMUX_PANE": "%1"}), \
+                mock.patch.object(telegram_kit, "_run", run):
+            self.assertTrue(telegram_kit.send_message("fake-token", "111", "hello"))
+        self.assertEqual(self.text(), "hello\n🪟 Tmux: demo_session")
+        self.assertEqual(run.calls[0][0], ["tmux", "display-message", "-p", "-t", "%1", "#S"])
+
+    def test_outside_tmux_the_text_is_untouched_and_tmux_never_runs(self):
+        run = Recorder()
+        with mock.patch.object(telegram_kit, "_run", run):
+            telegram_kit.send_message("fake-token", "111", "hello")
+        self.assertEqual((self.text(), run.calls), ("hello", []))
+
+    def test_no_session_name_means_no_line(self):
+        """tmux failing, printing nothing, or missing entirely: send the text as-is."""
+        def missing(argv, stdin=None):
+            raise FileNotFoundError("tmux")
+        for run in (Recorder((1, "")), Recorder((0, "\n")), missing):
+            with self.subTest(run=run), mock.patch.dict(os.environ, {"TMUX": "/tmp/x,1,0"}), \
+                    mock.patch.object(telegram_kit, "_run", run):
+                self.sent.clear()
+                self.assertTrue(telegram_kit.send_message("fake-token", "111", "hello"))
+                self.assertEqual(self.text(), "hello")
+
+    def test_a_line_the_text_already_carries_is_not_repeated(self):
+        with mock.patch.dict(os.environ, {"TMUX": "/tmp/x,1,0"}), \
+                mock.patch.object(telegram_kit, "_run", Recorder((0, "demo_session\n"))):
+            telegram_kit.send_message("fake-token", "111", "card\n🪟 Tmux: demo_session")
+        self.assertEqual(self.text(), "card\n🪟 Tmux: demo_session")
+
+    def test_caption_is_tagged_once_even_when_it_follows_as_a_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            photo = pathlib.Path(d) / "shot.png"
+            photo.write_bytes(b"png")
+            with mock.patch.dict(os.environ, {"TMUX": "/tmp/x,1,0"}), \
+                    mock.patch.object(telegram_kit, "_run", lambda argv, stdin=None: (0, "demo_session\n")):
+                telegram_kit.send_photo("fake-token", "111", photo, "cap")
+                telegram_kit.send_photo("fake-token", "111", photo)
+                telegram_kit.send_photo("fake-token", "111", photo, "x" * 1025)
+        self.assertEqual(_form_fields(self.sent[0])["caption"], (None, "cap\n🪟 Tmux: demo_session".encode()))
+        self.assertNotIn("caption", _form_fields(self.sent[1]))  # no caption, nothing to tag
+        self.assertEqual(self.text(3), "x" * 1025 + "\n🪟 Tmux: demo_session")
 
 
 class NotifyTests(unittest.TestCase):

@@ -64,6 +64,7 @@ BACKEND_LABELS = {
 }
 
 _API = "https://api.telegram.org/bot{token}/sendMessage"
+_PHOTO_API = "https://api.telegram.org/bot{token}/sendPhoto"
 
 
 # ── owner-only files ─────────────────────────────────────────────────────────
@@ -323,18 +324,87 @@ def resolve_credentials(token: str = "", chat_id: str = "", *,
             str(chat_id or "").strip() or env.get(CHAT_ID_ENV, "").strip())
 
 
+#: Same label as ``TG_TMUX_LABEL`` in ~/.claude/scripts/tg-tag.sh.
+TMUX_LABEL = "🪟 Tmux"
+
+
+def tmux_line() -> str:
+    """``"🪟 Tmux: <session>"`` when running inside tmux, else ``""``. Never raises.
+
+    Same rule as ``tg_tag_lines`` in ~/.claude/scripts/tg-tag.sh, so the phone shows
+    which tmux session to attach to.
+    """
+    if not os.environ.get("TMUX"):
+        return ""
+    pane = os.environ.get("TMUX_PANE")
+    try:
+        code, out = _run(["tmux", "display-message", "-p", *(["-t", pane] if pane else []), "#S"])
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    name = out.strip() if code == 0 else ""
+    return f"{TMUX_LABEL}: {name}" if name else ""
+
+
+def _tagged(text: str) -> str:
+    """*text* with the tmux line on its own line, unless it already carries it."""
+    line = tmux_line()
+    return f"{text}\n{line}" if line and line not in text else text
+
+
 def send_message(token: str, chat_id: str, text: str, *, timeout: float = 10) -> bool:
-    """POST one sendMessage to the Bot API. False on missing credentials or any failure."""
+    """POST one sendMessage to the Bot API. False on missing credentials or any failure.
+
+    Inside tmux the text ends with a ``tmux_line()``.
+    """
     if not token or not chat_id:
         return False
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
-    request = urllib.request.Request(_API.format(token=token), data=data, method="POST")
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": _tagged(text)}).encode("utf-8")
+    return _post(urllib.request.Request(_API.format(token=token), data=data, method="POST"), timeout)
+
+
+def _post(request: urllib.request.Request, timeout: float) -> bool:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response.read()
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return False  # incl. InvalidURL from a hand-corrupted token
     return True
+
+
+#: Telegram's caption limit, in UTF-16 code units (how the Bot API counts).
+CAPTION_LIMIT = 1024
+
+
+def send_photo(token: str, chat_id: str, photo: str | os.PathLike, caption: str = "", *,
+               timeout: float = 30) -> bool:
+    """POST one sendPhoto: the image at *photo* with *caption* as its text, in one message.
+
+    A caption over ``CAPTION_LIMIT`` would be rejected outright, so the image goes
+    uncaptioned and the full text follows as a ``send_message`` — delivered, not dropped.
+    False on missing credentials, an unreadable image or any failure; never raises.
+    """
+    if not token or not chat_id:
+        return False
+    path = pathlib.Path(photo)
+    try:
+        image = path.read_bytes()
+    except OSError:
+        return False
+    caption = _tagged(caption) if caption else ""  # measured with its tmux line
+    fits = len(caption.encode("utf-16-le")) // 2 <= CAPTION_LIMIT
+    boundary = uuid.uuid4().hex
+    filename = re.sub(r'["\r\n\\]', "_", path.name)
+    fields = [("chat_id", chat_id), ("caption", caption if fits else "")]
+    parts = [(f'name="{name}"', b"", value.encode("utf-8")) for name, value in fields if value]
+    parts.append((f'name="photo"; filename="{filename}"',
+                  b"Content-Type: application/octet-stream\r\n", image))
+    body = b"".join(f"--{boundary}\r\nContent-Disposition: form-data; {disposition}\r\n".encode()
+                    + ctype + b"\r\n" + value + b"\r\n" for disposition, ctype, value in parts)
+    body += f"--{boundary}--\r\n".encode()
+    request = urllib.request.Request(
+        _PHOTO_API.format(token=token), data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    return _post(request, timeout) and (fits or send_message(token, chat_id, caption))
 
 
 def notify(text: str, *, service: str, chat_id: str = "", token_key: str = TOKEN_KEY,
