@@ -233,6 +233,10 @@ class CredentialStore:
             raise ValueError("Invalid credential identifier")
         return pathlib.Path(self._dpapi_dir()) / f"{key}.dpapi"
 
+    def _label(self, key: str) -> str:
+        """The name a keychain / Secret Service UI shows for *key*'s item."""
+        return f"{self.service}: {key}"
+
     def get(self, key: str) -> str:
         """The stored secret for *key*, or ``""`` when there is none.
 
@@ -283,12 +287,15 @@ class CredentialStore:
                 # whole command on stdin, which keeps the secret out of every argv
                 # (i.e. out of `ps`), and -X hex-encodes it past the tokenizer's
                 # quoting and newline rules. -U updates in place rather than stacking
-                # duplicate items.
-                command = 'add-generic-password -U -s "{}" -a "{}" -X {}\n'.format(
-                    _batch_quote(self.service), _batch_quote(key), value.encode("utf-8").hex())
+                # duplicate items, and also rewrites an older item's label. -l names
+                # the item after its key too: without it, Keychain Access lists every
+                # item under the bare service name.
+                command = 'add-generic-password -U -s "{}" -a "{}" -l "{}" -X {}\n'.format(
+                    _batch_quote(self.service), _batch_quote(key),
+                    _batch_quote(self._label(key)), value.encode("utf-8").hex())
                 code, _ = _run(["security", "-i"], stdin=command)
             elif active == "libsecret":
-                code, _ = _run(["secret-tool", "store", "--label", f"{self.service} {key}",
+                code, _ = _run(["secret-tool", "store", "--label", self._label(key),
                                 "service", self.service, "account", key], stdin=value)
             else:  # dpapi
                 path = self._dpapi_path(key)

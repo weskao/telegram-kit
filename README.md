@@ -34,7 +34,10 @@ published to PyPI can pin the git tag instead:
   file or home-rolled obfuscation.
 - **Each caller gets its own namespace.** `CredentialStore(service)` keys
   every item under that service name, so two projects on the same machine
-  never collide.
+  never collide. Each Keychain / Secret Service item is labelled
+  `<service>: <key>` so you can tell items apart in Keychain Access or
+  Seahorse; an older item picks up the label the next time it's written.
+  DPAPI items are already easy to tell apart: each one is a `<key>.dpapi` file.
 - **Credentials never touch argv or the process list** — batch-mode/stdin
   paths are used for every backend.
 - **Owner-only atomic writes** (`write_private`) for anything that must live

@@ -75,6 +75,18 @@ class CredentialStoreTests(unittest.TestCase):
         self.assertIn('"other-app"', run.calls[1][1])
         self.assertNotIn("fake-token", " ".join(run.calls[1][0]) + run.calls[1][1])
 
+    def test_items_are_labelled_with_service_and_key(self):
+        store = telegram_kit.CredentialStore("other-app")
+        run = Recorder((0, ""))
+        with pinned("keychain", run):
+            self.assertTrue(store.set("work--main", "fake-token"))
+        self.assertIn('-l "other-app: work--main"', run.calls[0][1])
+        run = Recorder((0, ""))
+        with pinned("libsecret", run):
+            self.assertTrue(store.set("work--main", "fake-token"))
+        argv = run.calls[0][0]
+        self.assertEqual(argv[argv.index("--label") + 1], "other-app: work--main")
+
     def test_without_a_backend_nothing_is_stored(self):
         store = telegram_kit.CredentialStore("other-app")
         with pinned(None, Recorder()):
