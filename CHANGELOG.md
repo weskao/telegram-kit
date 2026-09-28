@@ -1,3 +1,8 @@
+## [0.1.5] - 2026-09-28
+
+### 🐛 Bug Fixes
+
+- **keychain:** Stop decoding numeric secrets as hex
 ## [0.1.4] - 2026-09-27
 
 ### 🚀 Features

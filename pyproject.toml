@@ -1,6 +1,6 @@
 [project]
 name = "telegram-kit"
-version = "0.1.4"
+version = "0.1.5"
 description = "Secure Telegram Bot API notifications for any Python project. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.10"
