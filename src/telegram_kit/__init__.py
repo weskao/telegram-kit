@@ -57,6 +57,13 @@ TIMEOUT_SECONDS = 10
 TOKEN_ENV, CHAT_ID_ENV = "TG_BOT_TOKEN", "TG_CHAT_ID"
 TOKEN_KEY = "telegram_bot_token"
 
+#: Longest a bot token / chat id is ever allowed to grow while it's being
+#: typed or pasted. Real values top out around 46 chars (token) and 32 chars
+#: (a numeric chat id or an @channel name) — these are a paste-flood/held-key
+#: backstop for callers' own input buffers, not a format check.
+MAX_TOKEN_LEN = 128
+MAX_CHAT_ID_LEN = 64
+
 BACKEND_LABELS = {
     "keychain": "macOS Keychain",
     "libsecret": "Secret Service (libsecret)",
@@ -429,7 +436,7 @@ def read_hidden(prompt: str, *, ask: Callable[[str], str] | None = None) -> str 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", getpass.GetPassWarning)
-            return (ask or getpass.getpass)(prompt).strip()
+            return (ask or getpass.getpass)(prompt).strip()[:MAX_TOKEN_LEN]
     except (EOFError, OSError, getpass.GetPassWarning):
         return None
 
