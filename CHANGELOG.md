@@ -1,3 +1,8 @@
+## [0.2.1] - 2026-09-28
+
+### 🚀 Features
+
+- **store:** Label keychain and secret service items with their key
 ## [0.2.0] - 2026-09-28
 
 ### 🚀 Features
