@@ -1,3 +1,8 @@
+## [0.2.0] - 2026-09-28
+
+### 🚀 Features
+
+- **limits:** Cap bot token and chat id length
 ## [0.1.5] - 2026-09-28
 
 ### 🐛 Bug Fixes
