@@ -138,15 +138,20 @@ def _unhex(secret: str) -> str:
     """Undo the hex encoding ``security -w`` applies to "non-clean" secrets.
 
     It decides that per item, so the shape of the output is the only signal.
-    A secret that is itself pure hex stays as-is unless it also decodes to
-    valid UTF-8 — Telegram tokens contain ``:`` so they never take that path.
+    ``security`` prints a secret of printable ASCII as-is, so a decode that is
+    all printable ASCII means the output was never encoded. All-digit output
+    is kept too: a numeric chat id such as ``1122334455`` is valid hex whose
+    decode (``\x11"3DU``) holds a control byte, so the ASCII check alone
+    would wrongly decode it. Telegram tokens contain ``:`` so they never
+    take this path.
     """
-    if not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", secret):
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", secret) or secret.isdigit():
         return secret
     try:
-        return bytes.fromhex(secret).decode("utf-8")
+        decoded = bytes.fromhex(secret).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return secret
+    return secret if decoded.isascii() and decoded.isprintable() else decoded
 
 
 def _batch_quote(value: str) -> str:

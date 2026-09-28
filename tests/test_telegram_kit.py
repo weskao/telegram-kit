@@ -425,7 +425,13 @@ class SubprocessHelperTests(unittest.TestCase):
         self.assertEqual((code, out.strip()), (0, "hi"))
 
     def test_unhex_decodes_a_hex_encoded_secret(self):
-        self.assertEqual(telegram_kit._unhex(b"hello".hex()), "hello")
+        self.assertEqual(telegram_kit._unhex("héllo".encode().hex()), "héllo")
+
+    def test_unhex_leaves_a_numeric_chat_id_alone(self):
+        self.assertEqual(telegram_kit._unhex("1122334455"), "1122334455")
+
+    def test_unhex_leaves_hex_that_security_would_have_printed_plain_alone(self):
+        self.assertEqual(telegram_kit._unhex("41424a"), "41424a")  # decodes to "ABJ"
 
     def test_unhex_leaves_a_non_hex_secret_alone(self):
         self.assertEqual(telegram_kit._unhex("123456:ABCDEF"), "123456:ABCDEF")
