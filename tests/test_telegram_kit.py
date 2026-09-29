@@ -509,9 +509,9 @@ class BackendLabelTests(unittest.TestCase):
 
 class DpapiDirTests(unittest.TestCase):
     def test_defaults_to_appdata_when_set(self):
-        with mock.patch.dict(os.environ, {"APPDATA": r"C:\Users\wes\AppData\Roaming"}):
+        with mock.patch.dict(os.environ, {"APPDATA": r"C:\Users\telegram-kit\AppData\Roaming"}):
             self.assertEqual(telegram_kit._default_dpapi_dir("other-app"),
-                              pathlib.Path(r"C:\Users\wes\AppData\Roaming") / "other-app")
+                              pathlib.Path(r"C:\Users\telegram-kit\AppData\Roaming") / "other-app")
 
     def test_falls_back_to_home_when_appdata_is_unset(self):
         with mock.patch.dict(os.environ):
