@@ -1,3 +1,13 @@
+## [0.2.2] - 2026-10-03
+
+### 🐛 Bug Fixes
+
+- **windows:** Drop PSModulePath from helper processes
+
+### ⚙️ Miscellaneous Tasks
+
+- Use project identity in metadata and tests
+- Update license copyright holder
 ## [0.2.1] - 2026-09-28
 
 ### 🚀 Features
