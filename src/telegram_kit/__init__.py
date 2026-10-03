@@ -109,7 +109,7 @@ def write_private(target: pathlib.Path, content: str) -> None:
                 result = subprocess.run(
                     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                     input=json.dumps({"path": str(temporary), "content": content}, ensure_ascii=True),
-                    capture_output=True, text=True, timeout=15, check=False,
+                    capture_output=True, text=True, timeout=15, check=False, env=_child_env(),
                 )
             except subprocess.SubprocessError as exc:
                 raise OSError("Unable to create an owner-only file") from exc
@@ -129,6 +129,16 @@ def write_private(target: pathlib.Path, content: str) -> None:
 
 # ── credential store ─────────────────────────────────────────────────────────
 
+def _child_env() -> dict[str, str]:
+    """The environment for a helper process, minus ``PSModulePath``.
+
+    Launched from PowerShell 7, we inherit pwsh's module path; powershell.exe
+    5.1 then cannot autoload ``ConvertTo-SecureString`` and every DPAPI save
+    fails. Unset, 5.1 rebuilds its own default path.
+    """
+    return {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+
+
 def _run(argv, stdin: str | None = None) -> tuple[int, str]:
     """The single subprocess funnel: ``(returncode, stdout)``.
 
@@ -136,7 +146,7 @@ def _run(argv, stdin: str | None = None) -> tuple[int, str]:
     """
     completed = subprocess.run(
         list(argv), input=stdin, capture_output=True, text=True,
-        timeout=TIMEOUT_SECONDS, check=False,
+        timeout=TIMEOUT_SECONDS, check=False, env=_child_env(),
     )
     return completed.returncode, completed.stdout
 

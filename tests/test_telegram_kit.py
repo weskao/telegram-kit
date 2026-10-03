@@ -419,6 +419,21 @@ class WritePrivateTests(unittest.TestCase):
                 telegram_kit.write_private(target, "content")
             self.assertEqual(list(pathlib.Path(d).iterdir()), [])
 
+    def test_windows_powershell_never_inherits_psmodulepath(self):
+        seen = []
+
+        def powershell(argv, **kwargs):
+            seen.append(kwargs.get("env"))
+            pathlib.Path(__import__("json").loads(kwargs["input"])["path"]).write_text("x")
+            return subprocess.CompletedProcess(argv, 0)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"PSModulePath": r"C:\pwsh7\Modules"}), \
+                mock.patch.object(telegram_kit, "os", WindowsOs()), \
+                mock.patch.object(telegram_kit.subprocess, "run", side_effect=powershell):
+            telegram_kit.write_private(pathlib.Path(d) / "secret.txt", "content")
+        self.assertIsNotNone(seen[0])
+        self.assertNotIn("PSModulePath", seen[0])
+
     def test_windows_timeout_is_oserror_and_leaves_no_temp_file(self):
         def slow_powershell(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 15)
@@ -435,6 +450,14 @@ class SubprocessHelperTests(unittest.TestCase):
     def test_run_executes_and_captures_stdout(self):
         code, out = telegram_kit._run([sys.executable, "-c", "print('hi')"])
         self.assertEqual((code, out.strip()), (0, "hi"))
+
+    def test_run_drops_psmodulepath_and_keeps_the_rest(self):
+        # pwsh 7's PSModulePath stops powershell.exe 5.1 autoloading
+        # ConvertTo-SecureString, which failed every DPAPI token save.
+        probe = "import os; print(os.environ.get('PSModulePath', '-'), os.environ.get('TK_PROBE'))"
+        with mock.patch.dict(os.environ, {"PSModulePath": "pwsh7", "TK_PROBE": "kept"}):
+            _code, out = telegram_kit._run([sys.executable, "-c", probe])
+        self.assertEqual(out.split(), ["-", "kept"])
 
     def test_unhex_decodes_a_hex_encoded_secret(self):
         self.assertEqual(telegram_kit._unhex("héllo".encode().hex()), "héllo")
