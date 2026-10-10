@@ -29,6 +29,8 @@ stored. The chat id is ordinary configuration, so each project keeps its own.
 """
 from __future__ import annotations
 
+__version__ = "0.2.2"
+
 import contextlib
 import functools
 import getpass
