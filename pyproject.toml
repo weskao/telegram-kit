@@ -21,3 +21,7 @@ packages = ["src/telegram_kit"]
 dev = [
     "ruff>=0.15.21",
 ]
+
+[tool.ruff.lint]
+# On top of ruff's default set: import order, pyupgrade, and two bug-catching B rules.
+extend-select = ["I", "UP", "B023", "B904"]
