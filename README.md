@@ -26,6 +26,29 @@ picks up a fix — no file to copy, no diff to reapply. A project that is never
 published to PyPI can pin the git tag instead:
 `uv add "telegram-kit @ git+https://github.com/weskao/telegram-kit@v0.1.2"`.
 
+## Test sending a message
+
+This test uses the installed `telegram_kit` Python package to call the Telegram
+Bot API directly. It does not require Claude or a separate `tg-send.sh` script.
+
+After installation and credential setup, open your bot's chat in Telegram and
+press **Start** (or send `/start`). From your project's directory, run:
+
+```bash
+uv run python -c 'import telegram_kit; print(telegram_kit.notify("Hello from telegram-kit!", service="my-app", chat_id="YOUR_CHAT_ID"))'
+```
+
+Replace `my-app` with the exact service name used when storing your bot token,
+and `YOUR_CHAT_ID` with your destination chat ID. The token should be stored
+under `telegram_bot_token`, as in the example above. If you configured
+`TG_CHAT_ID` in your environment, omit the `chat_id` argument to use it;
+`TG_BOT_TOKEN` is also supported when no stored token is available.
+
+The command prints `True` on success, and **Hello from telegram-kit!** should
+appear in the destination chat. If it prints `False`, check the service name,
+token, chat ID, access to your OS credential store, and network connection.
+For a group chat, make sure the bot is a member and is allowed to send messages.
+
 ## What it guarantees, whichever project uses it
 
 - **No plaintext fallback.** `CredentialStore` writes to the OS credential
